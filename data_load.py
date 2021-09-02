@@ -26,24 +26,6 @@ def load_negative_file(filename):
             line = f.readline()
     return negativeList
 
-def get_train_instances(train, num_negatives):
-    user_input, item_input, labels = [],[],[]
-    num_users, num_items = train.shape
-    for (u, i) in train.keys():
-        # positive instance
-        user_input.append(u)
-        item_input.append(i)
-        labels.append(1)
-        # negative instances
-        for t in range(num_negatives):
-            j = np.random.randint(num_items)
-            while (u, j) in train:
-                j = np.random.randint(num_items)
-            user_input.append(u)
-            item_input.append(j)
-            labels.append(0)
-    return user_input, item_input, labels
-
 def load_rating_file_as_matrix(filename):
     '''
     Read .rating file and Return dok matrix.
@@ -71,15 +53,36 @@ def load_rating_file_as_matrix(filename):
             line = f.readline()    
     return mat
 
-# train = load_rating_file_as_matrix('./data/ml-1m.train.rating')
-# print(train.toarray())
-# print(train.toarray().shape)
-# # rating = get_train_instances(train, 0)
-# # print(np.array(rating[-1]))
+def get_train_instances(train, num_negatives):
+    user_input, item_input, labels = [],[],[]
+    num_users, num_items = train.shape
+    for (u, i) in train.keys():
+        # positive instance
+        user_input.append(u)
+        item_input.append(i)
+        labels.append(1)
+        # negative instances
+        for t in range(num_negatives):
+            j = np.random.randint(num_items)
+            while (u, j) in train:
+                j = np.random.randint(num_items)
+            user_input.append(u)
+            item_input.append(j)
+            labels.append(0)
+    return user_input, item_input, labels
 
-# # values = np.ones(len(rating))
+def get_train_instances(train, num_negatives=1):
+    user_input, item_input, negative_input = [],[],[]
+    num_users, num_items = train.shape
+    for (u, i) in train.keys():
+        # positive instance
+        user_input.append(u)
+        item_input.append(i)
+        # negative instances
+        for t in range(num_negatives):
+            j = np.random.randint(num_items)
+            while (u, j) in train:
+                j = np.random.randint(num_items)
+            negative_input.append(j)
 
-# # users = rating[:,0]
-# # items = rating[:,1]
-# # X = csr_matrix((values, (users, items)))
-# # print(X.toarray().shape)
+    return user_input, item_input, negative_input

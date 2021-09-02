@@ -1,5 +1,4 @@
 import tensorflow as tf
-from tensorflow import keras
 from tensorflow.keras.layers import Dense, Embedding, Flatten
 from tensorflow.keras.models import Sequential
 import numpy as np

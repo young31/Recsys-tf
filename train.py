@@ -4,8 +4,18 @@ import argparse
 
 from models.MF import *
 from models.FM import *
+from models.AE import *
 from data_load import *
 from evaluate import *
+
+import tensorflow as tf
+
+gpus = tf.config.experimental.list_physical_devices('GPU')
+if gpus:
+    try:
+        tf.config.experimental.set_memory_growth(gpus[0], True)
+    except RuntimeError as e:
+        print(e)
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -48,9 +58,34 @@ def get_model(args):
         return PNN(args.x_dims, args.emb_dim, args.hidden_layers, args.model_type)
     elif model_name == 'xDFM':
         return xDFM(args.x_dims, args.emb_dim, args.cin_layers, args.hidden_layers, args.activation)
+    elif model_name == 'DAE':
+        return DAE(args.num_items, args.emb_dim, args.hidden_layers) # no activation is better
+    elif model_name == 'CDAE':
+        return CDAE(args.num_users, args.num_items, args.emb_dim, args.hidden_layers) # no activation is better
+    elif model_name == 'MultVAE':
+        return MultVAE(args.num_items, args.emb_dim, args.hidden_layers) # no activation is better
     else:
         raise(ValueError('not available model'))
 
+class ScoreCallback(tf.keras.callbacks.Callback):
+    def __init__(self):
+        self.hr_hist = []
+        self.ndcg_hist = []
+
+    def on_epoch_end(self, epoch, logs=None):
+        hr, ndcg = evaluate_model(self.model, test_ratings, test_negatives, history=history, is_ae=True)
+        self.hr_hist.append(np.mean(hr))
+        self.ndcg_hist.append(np.mean(ndcg))
+        print(np.mean(hr), np.mean(ndcg))
+
+class AnnealCallback(tf.keras.callbacks.Callback):
+    def __init__(self, anneal_cap=0.3, anneal_step=1e-4):
+        super().__init__()
+        self.anneal_cap = anneal_cap
+        self.anneal_step = anneal_step
+        
+    def on_train_batch_end(self, batch, logs=None):
+        self.model.anneal =  min(self.anneal_cap, self.model.anneal+self.anneal_step)
 
 if __name__=='__main__':
     train = load_rating_file_as_matrix('./data/ml-1m.train.rating')
@@ -70,31 +105,98 @@ if __name__=='__main__':
     args.num_items = num_items
     args.x_dims = [num_users, num_items]
 
-    # data
-    user_inputs, item_inputs, labels = get_train_instances(train, args.n_negatives)
     # model
     model = get_model(args)
     model.compile(optimizer=tf.keras.optimizers.Adam(), loss=tf.losses.BinaryCrossentropy(from_logits=True))
-    # eval before
-    hr_hist = []
-    ndcg_hist = []
-    hr, ndcg = evaluate_model(model, test_ratings, test_negatives)
-    hr_hist.append(np.mean(hr))
-    ndcg_hist.append(np.mean(ndcg))
-    # train
-    for _ in range(args.epochs):
-        model.fit(
-            [np.array(user_inputs), np.array(item_inputs)], np.array(labels),
-            batch_size = args.batch_size,
-            shuffle=True,
-        )
 
-        hr, ndcg = evaluate_model(model, test_ratings, test_negatives)
+    # train
+    if isinstance(model, DAE):
+        history = train.toarray()
+
+        score_callback = ScoreCallback()
+
+        hr, ndcg = evaluate_model(model, test_ratings, test_negatives, history=history, is_ae=True)
+        score_callback.hr_hist.append(np.mean(hr))
+        score_callback.ndcg_hist.append(np.mean(ndcg))
+
+        model.fit(
+            history,
+            batch_size = args.batch_size,
+            epochs = args.epochs,
+            shuffle = True,
+            callbacks = [score_callback],
+            verbose = 2
+        )        
+
+        hr_hist = score_callback.hr_hist
+        ndcg_hist = score_callback.ndcg_hist
+
+    elif isinstance(model, CDAE): # user
+        history = train.toarray()
+
+        hr, ndcg = evaluate_model(model, test_ratings, test_negatives, history=history, is_ae=True)
+
+        score_callback = ScoreCallback()
+        score_callback.hr_hist.append(np.mean(hr))
+        score_callback.ndcg_hist.append(np.mean(ndcg))
+
+        users = np.arange(history.shape[0])
+        model.fit(
+            [users, history],
+            batch_size = args.batch_size,
+            epochs = args.epochs,
+            shuffle = True,
+            callbacks = [score_callback],
+            verbose = 2
+        )     
+
+        hr_hist = score_callback.hr_hist
+        ndcg_hist = score_callback.ndcg_hist
+
+    elif isinstance(model, MultVAE):
+        history = train.toarray()
+
+        hr, ndcg = evaluate_model(model, test_ratings, test_negatives, history=history, is_ae=True)
+
+        score_callback = ScoreCallback()
+        score_callback.hr_hist.append(np.mean(hr))
+        score_callback.ndcg_hist.append(np.mean(ndcg))
+
+        model.fit(
+            history,
+            batch_size = args.batch_size,
+            epochs = args.epochs,
+            shuffle = True,
+            callbacks = [score_callback, AnnealCallback()],
+            verbose = 2
+        )     
+
+        hr_hist = score_callback.hr_hist
+        ndcg_hist = score_callback.ndcg_hist
+
+    else: # MF, FM
+        hr_hist = []
+        ndcg_hist = []
+
+        user_inputs, item_inputs, labels = get_train_instances(train, args.n_negatives)
+
+        for _ in range(args.epochs):
+            hr, ndcg = evaluate_model(model, test_ratings, test_negatives)
+
+            hr_hist.append(np.mean(hr))
+            ndcg_hist.append(np.mean(ndcg))
+
+            model.fit(
+                [np.array(user_inputs), np.array(item_inputs)], np.array(labels),
+                batch_size = args.batch_size,
+                shuffle=True,
+            )
+            if args.resample:
+                user_inputs, item_inputs, labels = get_train_instances(train, args.n_negatives)
+
         hr_hist.append(np.mean(hr))
         ndcg_hist.append(np.mean(ndcg))
 
-        if args.resample:
-            user_inputs, item_inputs, labels = get_train_instances(train, args.n_negatives)
 
     # save
     model.save_weights(f'./weights/{args.model_name}.h5')

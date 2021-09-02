@@ -1,7 +1,11 @@
 import tensorflow as tf
 from tensorflow.keras.layers import Dense, Flatten, Conv1D, Activation
+from tensorflow.keras.models import Model
 from tensorflow.keras.regularizers import l2
 import tensorflow_addons as tfa
+
+def log_norm_pdf(x, mu, logvar):
+    return -0.5*(logvar + tf.pow((x - mu), 2) / tf.exp(logvar))
 
 class FM(tf.keras.models.Model):
     def __init__(self, latent_dim, w_reg=1e-4, v_reg=1e-4):
@@ -214,3 +218,28 @@ class CIN(tf.keras.layers.Layer):
             
         res = tf.reduce_sum(tf.concat(xs, axis=1), -1)
         return res
+
+
+class CompositePrior(tf.keras.models.Model):
+    def __init__(self, latent_dim, mixture_weights = [3/20, 15/20, 2/20]):
+        super().__init__()
+        self.encoder_old = None
+        self.latent_dim = latent_dim
+        self.mixture_weights = mixture_weights
+        
+        self.mu_prior = self.add_weight(shape=(self.latent_dim, ), initializer = tf.zeros_initializer(), trainable=False)
+        self.logvar_prior  = self.add_weight(shape=(self.latent_dim, ), initializer = tf.zeros_initializer(), trainable=False)
+        self.logvar_unif_prior = self.add_weight(shape=(self.latent_dim, ), initializer = tf.constant_initializer(10), trainable=False)
+        
+    def call(self, x, z):
+        post_mu, post_logvar = self.encoder_old(x)
+        
+        stnd_prior = log_norm_pdf(z, self.mu_prior, self.logvar_prior)
+        post_prior = log_norm_pdf(z, post_mu, post_logvar)
+        unif_prior = log_norm_pdf(z, self.mu_prior, self.logvar_unif_prior)
+        
+        gaussians = [stnd_prior, post_prior, unif_prior]
+        gaussians = [g+tf.math.log(w) for g, w in zip(gaussians, self.mixture_weights)]
+        
+        density = tf.stack(gaussians, -1)
+        return tf.math.log(tf.reduce_sum(tf.exp(density), -1)) # logsumexp
