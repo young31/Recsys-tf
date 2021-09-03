@@ -1,7 +1,9 @@
+import numpy as np
 import tensorflow as tf
-from tensorflow.keras.layers import Dense, Embedding, Flatten, Input, Dropout, Activation
+from tensorflow.keras.layers import Dense, Embedding, Flatten, Input, Dropout, Activation, Concatenate
 from tensorflow.keras.models import Sequential, Model
-from .layers import CompositePrior
+from .layers import CompositePrior, NonLinear
+from scipy.sparse import csr_matrix
 
 def sampling(args):
     z_mean, z_log_var = args
@@ -186,10 +188,166 @@ class MultVAE(BaseVAE):
         self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
         
         return {'loss': loss}
-    
 
-    
 
+class EASE:
+    def __init__(self, users, items):
+        self.users = users
+        self.items = items
+
+    def fit(self, lambda_ = 1.5):
+        users, items = self.users, self.items
+        values = np.ones(users.shape[0])
+
+        X = csr_matrix((values, (users, items)))
+        self.X = X
+
+        G = X.T.dot(X).toarray()
+        diagIndices = np.diag_indices(G.shape[0])
+        G[diagIndices] += lambda_
+        P = np.linalg.inv(G)
+        B = P / (-np.diag(P))
+        B[diagIndices] = 0
+
+        self.B = B
+        self.pred = X.dot(B)
+
+    def predict_one_user(self, user, items):
+        return np.take(self.pred[user, :], items)
+        
+class HVampVAE(tf.keras.models.Model):
+    def __init__(self, num_items, emb_dim, hidden_layers, gated=True, activation='tanh', dropout_rate=0.5, number_components=1000):
+        # component architecture changed little bit
+        super().__init__()
+        self.num_items = num_items
+        self.emb_dim = emb_dim
+        self.hidden_layers = hidden_layers
+        self.gated = gated
+        self.activation = activation
+        self.dropout_rate = dropout_rate
+        
+        self.q_z2 = self.build_q_z2()
+        self.q_z1 = self.build_q_z1()
+        self.p_z1 = self.build_p_z1()
+        self.p_x = self.build_p_x()
+        
+        self.number_components = number_components
+        self.idle_input = tf.Variable(tf.eye(number_components))
+        self.means = Dense(num_items, use_bias=False)
+        
+    def compile(self, optimizer, loss=None):
+        super().compile()
+        self.optimizer = optimizer
+        
+    def call(self, x):
+        x /= tf.norm(x, axis=1, keepdims=True)
+        
+        z2_q_mean, z2_q_logvar = self.q_z2(x)
+        z2_q = sampling([z2_q_mean, z2_q_logvar])
+        
+        z1_q_mean, z1_q_logvar = self.q_z1([x, z2_q])
+        z1_q = sampling([z1_q_mean, z1_q_logvar])
+        
+        z1_p_mean, z1_p_logvar = self.p_z1(z2_q)
+
+        pred = self.p_x([z1_q, z2_q])
+        
+        return pred, z1_q, z1_q_mean, z1_q_logvar, z2_q, z2_q_mean, z2_q_logvar, z1_p_mean, z1_p_logvar
+    
+    def predict(self, x, *args, **kwargs): # not implemented other options yet
+        pred = self(x)[0]
+        return pred.numpy()
+
+    def log_p_z2(self, z2):
+        x = self.means(self.idle_input)
+        z2_p_mean, z2_p_logvar = self.q_z2(x)
+        
+        z2_expand = tf.expand_dims(z2, 1)
+        z2_p_mean = tf.expand_dims(z2_p_mean, 0)
+        z2_p_logvar = tf.expand_dims(z2_p_logvar, 0)
+
+        a = log_normal_diag(z2_expand, z2_p_mean, z2_p_logvar, axis=2) - tf.math.log(float(self.number_components))
+        a_max = tf.reduce_max(a, 1)
+        log_prior = (a_max + tf.math.log(tf.reduce_sum(tf.exp(a - tf.expand_dims(a_max, 1)), 1)))
+
+        return log_prior
+        
+    def train_step(self, data, beta=1.):
+        x = data
+        
+        # binary case
+        with tf.GradientTape() as tape:
+            pred, z1_q, z1_q_mean, z1_q_logvar, z2_q, z2_q_mean, z2_q_logvar, z1_p_mean, z1_p_logvar = self(x)
+            # recon loss
+            RE = tf.reduce_mean(tf.reduce_sum(tf.nn.log_softmax(pred) * x, -1))
+            
+            # kl loss
+            log_p_z1 = log_normal_diag(z1_q, z1_p_mean, z1_p_logvar, axis=1)
+            log_q_z1 = log_normal_diag(z1_q, z1_q_mean, z1_q_logvar, axis=1)
+            log_p_z2 = self.log_p_z2(z2_q)
+            log_q_z2 = log_normal_diag(z2_q, z2_q_mean, z2_q_logvar, axis=1)
+            KL = -(log_p_z1 + log_p_z2 - log_q_z1 - log_q_z2)    
+            loss = -RE + beta * KL
+            loss = tf.reduce_mean(loss)
+            
+        grads = tape.gradient(loss, self.trainable_weights)
+        self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
+        
+        return {'loss': loss, 'RE': tf.reduce_mean(RE), 'KL': tf.reduce_mean(KL)}
+    
+    def build_q_z2(self):
+        x_in = Input(shape=(self.num_items, ))
+        
+        x = Dropout(self.dropout_rate)(x_in)
+        for hidden in self.hidden_layers:
+            x = NonLinear(hidden, gated=self.gated, activation=self.activation)(x)
+        
+        mu = Dense(self.emb_dim)(x)
+        logvar = Dense(self.emb_dim)(x)
+        
+        return Model(x_in, [mu, logvar], name='q_z2')
+    
+    def build_q_z1(self):
+        x_in = Input(shape=(self.num_items, ))
+        z2_in = Input(shape=(self.emb_dim, ))
+        
+        x = Dropout(self.dropout_rate)(x_in)
+
+        h = Concatenate()([x, z2_in]) # z_in => z2
+        for hidden in self.hidden_layers:
+            x = NonLinear(hidden, gated=self.gated, activation=self.activation)(h)
+        
+        mu = Dense(self.emb_dim)(h)
+        logvar = NonLinear(self.emb_dim, gated=self.gated, activation=self.activation)(h)
+        
+        return Model([x_in, z2_in], [mu, logvar], name='q_z1')
+    
+    def build_p_z1(self):
+        z2_in = Input(shape=(self.emb_dim, ))
+        h = z2_in
+        for hidden in self.hidden_layers:
+            h = NonLinear(hidden, gated=self.gated, activation=self.activation)(h)
+        
+        mu = Dense(self.emb_dim)(h)
+        logvar = Dense(self.emb_dim)(h)
+        
+        return Model(z2_in, [mu, logvar], name='p_z1')
+
+    def build_p_x(self):
+        z1_in = Input(shape=(self.emb_dim, ))
+        z2_in = Input(shape=(self.emb_dim, ))
+        z1 = z1_in
+        z2 = z2_in
+        
+        h = Concatenate()([z1, z2])
+        for hidden in self.hidden_layers:
+            h = NonLinear(hidden, gated=self.gated, activation=self.activation)(h)
+
+        out = Dense(self.num_items)(h)
+        
+        return Model([z1_in, z2_in], out, name='p_x')
+        
+        
 
 class RecVAE(BaseVAE):
     ## need to be fixed => seperate all models in seperate file

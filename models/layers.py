@@ -243,3 +243,23 @@ class CompositePrior(tf.keras.models.Model):
         
         density = tf.stack(gaussians, -1)
         return tf.math.log(tf.reduce_sum(tf.exp(density), -1)) # logsumexp
+
+class NonLinear(tf.keras.models.Model):
+    def __init__(self, hidden_units, gated=False, activation=None):
+        super().__init__()
+        self.gated = gated
+        self.activation = activation
+        self.linear = Dense(hidden_units)
+        if self.gated:
+            self.gate = Dense(hidden_units, activation='sigmoid')
+        if self.activation is not None:
+            self.activation = Activation(activation)
+        
+    def call(self, x):
+        x = self.linear(x)
+        if self.gated:
+            h = self.gate(x)
+            x = tf.multiply(x, h)
+        if self.activation is not None:
+            x = self.activation(x)
+        return x

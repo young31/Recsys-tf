@@ -1,14 +1,16 @@
 import numpy as np
-from models.AE import DAE
+from models.AE import CDAE
 import heapq
 
-def evaluate_model(model, testRatings, testNegatives, history=None, K=10, is_ae=False):
+def evaluate_model(model, testRatings, testNegatives, history=None, K=10, is_ae=False, is_ease=False):
     hits, ndcgs = [],[]
     for idx in range(len(testRatings)):
-        user = testRatings[idx][0] if not isinstance(model, DAE) else None
+        user = testRatings[idx][0] if isinstance(model, CDAE) else None
         gtItem = testRatings[idx][1]
         if is_ae:
             (hr,ndcg) = eval_one_rating_ae(model, gtItem, testNegatives[idx], history[idx:idx+1], user=user, K=K)
+        elif is_ease:
+            (hr,ndcg) = eval_one_rating_ease(model, gtItem, testNegatives[idx], user=user, K=K)
         else:
             (hr,ndcg) = eval_one_rating(model, user, gtItem, testNegatives[idx], K)
         hits.append(hr)
@@ -45,6 +47,23 @@ def eval_one_rating_ae(model, gtItem, negatives, history, user=None, K=10):
         predictions = model.predict(history, 
                                     batch_size=100, verbose=0)
         predictions = predictions[0][items]
+
+    for i in range(len(items)):
+        item = items[i]
+        map_item_score[item] = predictions[i]
+    items.pop()
+
+    ranklist = heapq.nlargest(K, map_item_score, key=map_item_score.get)
+    hr = getHitRatio(ranklist, gtItem)
+    ndcg = getNDCG(ranklist, gtItem)
+    return (hr, ndcg)
+
+def eval_one_rating_ease(model, gtItem, negatives, user, K=10):
+    items = negatives + [gtItem]
+    # Get prediction scores
+    map_item_score = {}
+    predictions = model.predict_one_user(user, items)
+    print(predictions)
 
     for i in range(len(items)):
         item = items[i]
