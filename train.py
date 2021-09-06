@@ -64,6 +64,10 @@ def get_model(args):
         return CDAE(args.num_users, args.num_items, args.emb_dim, args.hidden_layers) # no activation is better
     elif model_name == 'MultVAE':
         return MultVAE(args.num_items, args.emb_dim, args.hidden_layers) # no activation is better
+    elif model_name == 'HVampVAE':
+        return HVampVAE(args.num_items, args.emb_dim, args.hidden_layers)
+    elif model_name == 'NeuralEASE':
+        return NeuralEASE(args.num_items)
     else:
         raise(ValueError('not available model'))
 
@@ -110,7 +114,7 @@ if __name__=='__main__':
     model.compile(optimizer=tf.keras.optimizers.Adam(), loss=tf.losses.BinaryCrossentropy(from_logits=True))
 
     # train
-    if isinstance(model, DAE):
+    if args.model_name in ['DAE', 'HVampVAE']:
         history = train.toarray()
 
         score_callback = ScoreCallback()
@@ -130,6 +134,29 @@ if __name__=='__main__':
 
         hr_hist = score_callback.hr_hist
         ndcg_hist = score_callback.ndcg_hist
+
+    elif isinstance(model, NeuralEASE):
+        history = train.toarray()
+
+        model.compile(optimizer=tf.optimizers.Adam(), loss=tf.losses.BinaryCrossentropy())
+        score_callback = ScoreCallback()
+
+        hr, ndcg = evaluate_model(model, test_ratings, test_negatives, history=history, is_ae=True)
+        score_callback.hr_hist.append(np.mean(hr))
+        score_callback.ndcg_hist.append(np.mean(ndcg))
+
+        model.fit(
+            history,
+            batch_size = args.batch_size,
+            epochs = args.epochs,
+            shuffle = True,
+            callbacks = [score_callback],
+            verbose = 2
+        )        
+
+        hr_hist = score_callback.hr_hist
+        ndcg_hist = score_callback.ndcg_hist
+
 
     elif isinstance(model, CDAE): # user
         history = train.toarray()

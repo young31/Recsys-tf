@@ -19,6 +19,12 @@ def log_normal_diag(x, mean, log_var, axis=1, reduction=True):
     else:
         return res
 
+class DiagonalToZero(tf.keras.constraints.Constraint):
+    def __call__(self, w):
+        """Set diagonal to zero to avoid identity function"""
+        q = tf.linalg.set_diag(w, tf.zeros(w.shape[0:-1]), name=None)
+        return q
+
 class BaseAE(tf.keras.models.Model):
     def __init__(self, num_items, emb_dim, hidden_layers, activation=None):
         super().__init__()
@@ -38,8 +44,10 @@ class BaseAE(tf.keras.models.Model):
         encoder = Sequential()
         if dropout_rate > 0:
             encoder.add(Dropout(dropout_rate))
+
         for h in self.hidden_layers:
             encoder.add(Dense(h, activation='relu'))
+            encoder.add(tf.keras.layers.LayerNormalization()) # key factor!
 
         encoder.add(Dense(self.emb_dim, activation=self.activation))
         
@@ -175,13 +183,11 @@ class MultVAE(BaseVAE):
 
     def train_step(self, data):
         x = data
-        # x = tf.nn.l2_normalize(tf.cast(x, tf.float32), 1)
         with tf.GradientTape() as tape:
             pred, mu, log_var = self(x, training=True)
 
-            kl_loss = tf.reduce_mean(tf.reduce_sum(0.5*(log_var + tf.exp(log_var) + tf.pow(mu, 2)-1), 1, keepdims=True))
-            ce_loss = -tf.reduce_mean(tf.reduce_sum(tf.nn.log_softmax(pred) * x, -1))
-            # ce_loss = tf.reduce_mean(tf.losses.categorical_crossentropy(x, pred, from_logits=True))
+            kl_loss = tf.reduce_sum(0.5*(-log_var + tf.exp(log_var) + tf.pow(mu, 2)-1), 1)
+            ce_loss = -tf.reduce_sum(tf.nn.log_softmax(pred) * x, -1)
             loss = ce_loss + kl_loss*self.anneal
             
         grads = tape.gradient(loss, self.trainable_weights)
@@ -215,9 +221,33 @@ class EASE:
     def predict_one_user(self, user, items):
         return np.take(self.pred[user, :], items)
         
+
+class NeuralEASE(tf.keras.models.Model):
+    def __init__(self, num_items):
+        super().__init__()
+        self.ease = Dense(num_items, use_bias=False, kernel_constraint=DiagonalToZero(), activation='sigmoid')
+
+    def compile(self, optimizer, loss):
+        super().compile()
+        self.optimizer = optimizer
+        self.loss = loss
+
+    def call(self, x):
+        return self.ease(x)
+
+    def train_step(self, x):
+        with tf.GradientTape() as tape:
+            pred = self(x)
+            loss = self.loss(x, pred)
+
+        grads = tape.gradient(loss, self.trainable_weights)
+        self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
+
+        return {'loss': loss}
+        
+
 class HVampVAE(tf.keras.models.Model):
     def __init__(self, num_items, emb_dim, hidden_layers, gated=True, activation='tanh', dropout_rate=0.5, number_components=1000):
-        # component architecture changed little bit
         super().__init__()
         self.num_items = num_items
         self.emb_dim = emb_dim
@@ -233,15 +263,13 @@ class HVampVAE(tf.keras.models.Model):
         
         self.number_components = number_components
         self.idle_input = tf.Variable(tf.eye(number_components))
-        self.means = Dense(num_items, use_bias=False)
+        self.means = Dense(num_items, use_bias=False, activation=lambda x: tf.clip_by_value(x, -1, 1))
         
     def compile(self, optimizer, loss=None):
         super().compile()
         self.optimizer = optimizer
         
     def call(self, x):
-        x /= tf.norm(x, axis=1, keepdims=True)
-        
         z2_q_mean, z2_q_logvar = self.q_z2(x)
         z2_q = sampling([z2_q_mean, z2_q_logvar])
         
@@ -274,12 +302,11 @@ class HVampVAE(tf.keras.models.Model):
         
     def train_step(self, data, beta=1.):
         x = data
-        
-        # binary case
         with tf.GradientTape() as tape:
             pred, z1_q, z1_q_mean, z1_q_logvar, z2_q, z2_q_mean, z2_q_logvar, z1_p_mean, z1_p_logvar = self(x)
             # recon loss
-            RE = tf.reduce_mean(tf.reduce_sum(tf.nn.log_softmax(pred) * x, -1))
+            # RE = tf.reduce_mean(tf.reduce_sum(tf.nn.log_softmax(pred) * x, -1))
+            RE = tf.reduce_sum(tf.nn.log_softmax(pred) * x, -1)
             
             # kl loss
             log_p_z1 = log_normal_diag(z1_q, z1_p_mean, z1_p_logvar, axis=1)
@@ -299,8 +326,10 @@ class HVampVAE(tf.keras.models.Model):
         x_in = Input(shape=(self.num_items, ))
         
         x = Dropout(self.dropout_rate)(x_in)
+
         for hidden in self.hidden_layers:
             x = NonLinear(hidden, gated=self.gated, activation=self.activation)(x)
+            x = tf.keras.layers.LayerNormalization()(x)
         
         mu = Dense(self.emb_dim)(x)
         logvar = Dense(self.emb_dim)(x)
@@ -310,15 +339,17 @@ class HVampVAE(tf.keras.models.Model):
     def build_q_z1(self):
         x_in = Input(shape=(self.num_items, ))
         z2_in = Input(shape=(self.emb_dim, ))
+        z2 = z2_in
         
         x = Dropout(self.dropout_rate)(x_in)
 
-        h = Concatenate()([x, z2_in]) # z_in => z2
+        h = Concatenate()([x, z2]) 
         for hidden in self.hidden_layers:
-            x = NonLinear(hidden, gated=self.gated, activation=self.activation)(h)
-        
+            h = NonLinear(hidden, gated=self.gated, activation=self.activation)(h)
+            h = tf.keras.layers.LayerNormalization()(h)
+
         mu = Dense(self.emb_dim)(h)
-        logvar = NonLinear(self.emb_dim, gated=self.gated, activation=self.activation)(h)
+        logvar = Dense(self.emb_dim)(h)
         
         return Model([x_in, z2_in], [mu, logvar], name='q_z1')
     
@@ -327,27 +358,27 @@ class HVampVAE(tf.keras.models.Model):
         h = z2_in
         for hidden in self.hidden_layers:
             h = NonLinear(hidden, gated=self.gated, activation=self.activation)(h)
+            h = tf.keras.layers.LayerNormalization()(h)
         
         mu = Dense(self.emb_dim)(h)
         logvar = Dense(self.emb_dim)(h)
         
         return Model(z2_in, [mu, logvar], name='p_z1')
-
+         
     def build_p_x(self):
         z1_in = Input(shape=(self.emb_dim, ))
         z2_in = Input(shape=(self.emb_dim, ))
         z1 = z1_in
         z2 = z2_in
-        
+
         h = Concatenate()([z1, z2])
         for hidden in self.hidden_layers:
             h = NonLinear(hidden, gated=self.gated, activation=self.activation)(h)
+            h = tf.keras.layers.LayerNormalization()(h)
 
         out = Dense(self.num_items)(h)
         
         return Model([z1_in, z2_in], out, name='p_x')
-        
-        
 
 class RecVAE(BaseVAE):
     ## need to be fixed => seperate all models in seperate file
