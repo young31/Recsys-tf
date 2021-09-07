@@ -9,6 +9,7 @@ from data_load import *
 from evaluate import *
 
 import tensorflow as tf
+import tensorflow_addons as tfa
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
@@ -40,12 +41,14 @@ def parse_args():
 
 def get_model(args):
     model_name = args.model_name
+    # MF
     if model_name == 'GMF':
         return GMF(args.num_users, args.num_items, args.emb_dim)
     elif model_name == 'MLP':
         return MLP(args.num_users, args.num_items, args.emb_dim, args.hidden_layers)
     elif model_name == 'NMF':
         return NMF(args.num_users, args.num_items, args.emb_dim, args.hidden_layers)
+    # FM
     elif model_name == 'AFM':
         return AFM(args.x_dims, args.emb_dim, args.att_dim)
     elif model_name == 'AutoInt':
@@ -58,6 +61,7 @@ def get_model(args):
         return PNN(args.x_dims, args.emb_dim, args.hidden_layers, args.model_type)
     elif model_name == 'xDFM':
         return xDFM(args.x_dims, args.emb_dim, args.cin_layers, args.hidden_layers, args.activation)
+    # AE
     elif model_name == 'DAE':
         return DAE(args.num_items, args.emb_dim, args.hidden_layers) # no activation is better
     elif model_name == 'CDAE':
@@ -68,6 +72,8 @@ def get_model(args):
         return HVampVAE(args.num_items, args.emb_dim, args.hidden_layers)
     elif model_name == 'NeuralEASE':
         return NeuralEASE(args.num_items)
+    elif model_name == 'VASP':
+        return VASP(args.num_items, args.emb_dim, args.hidden_layers)
     else:
         raise(ValueError('not available model'))
 
@@ -201,6 +207,29 @@ if __name__=='__main__':
         hr_hist = score_callback.hr_hist
         ndcg_hist = score_callback.ndcg_hist
 
+    elif isinstance(model, VASP):
+        # focal loss !
+        model.compile(optimizer=tf.optimizers.Adam(), loss=tfa.losses.sigmoid_focal_crossentropy)
+        history = train.toarray()
+
+        hr, ndcg = evaluate_model(model, test_ratings, test_negatives, history=history, is_ae=True)
+
+        score_callback = ScoreCallback()
+        score_callback.hr_hist.append(np.mean(hr))
+        score_callback.ndcg_hist.append(np.mean(ndcg))
+
+        model.fit(
+            history,
+            batch_size = args.batch_size,
+            epochs = args.epochs,
+            shuffle = True,
+            callbacks = [score_callback],
+            verbose = 2
+        )     
+
+        hr_hist = score_callback.hr_hist
+        ndcg_hist = score_callback.ndcg_hist
+
     else: # MF, FM
         hr_hist = []
         ndcg_hist = []
@@ -226,9 +255,10 @@ if __name__=='__main__':
 
 
     # save
-    model.save_weights(f'./weights/{args.model_name}.h5')
     res = pd.DataFrame(index=range(len(hr_hist)), columns=['hr', 'ndcg'])
     res['hr'] = hr_hist
     res['ndcg'] = ndcg_hist
 
     res.to_csv(f'./scores/{args.model_name}.csv', index=False)
+    # TODO: save and load test 
+    model.save_weights(f'./weights/{args.model_name}.h5')

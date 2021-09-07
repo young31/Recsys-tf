@@ -380,6 +380,111 @@ class HVampVAE(tf.keras.models.Model):
         
         return Model([z1_in, z2_in], out, name='p_x')
 
+
+class VASP(BaseVAE):
+    # TODO: residual connection modulization // 
+    # split augmentation is not implemented
+    def __init__(self, num_items, emb_dim, hidden_layers, activation=None, sampling_ratio=0.3):
+        super().__init__(num_items, emb_dim, hidden_layers, activation)
+        
+        self.model = self.build_model()
+        self.ease = Dense(self.num_items, activation='sigmoid', use_bias=False, kernel_constraint=DiagonalToZero())
+        
+    def build_model(self):
+        self.encoder = self.build_encoder()
+        self.decoder = self.build_decoder()
+        
+        inputs = self.encoder.input
+        
+        mu, log_var = self.encoder(inputs)
+        h = sampling([mu, log_var])
+        
+        outputs = self.decoder(h)
+
+        return Model(inputs, [outputs, mu, log_var])
+
+    def call(self, x, training=False):
+        sampled_x = x
+        
+        d, mu, log_var = self.model(sampled_x)
+
+        ease = self.ease(sampled_x)
+        
+        pred = d * ease # logical and
+        
+        if training:
+            return pred, mu, log_var
+        else:
+            return pred
+    
+    def predict(self, data, *args, **kwargs):
+        x = data
+        sampled_x = x
+        
+        mu, _ = self.encoder.predict(sampled_x, *args, **kwargs)
+        d = self.decoder.predict(mu, *args, **kwargs)
+
+        ease = self.ease(sampled_x).numpy()
+
+        pred = d * ease
+        
+        return pred
+
+    def train_step(self, data):
+        x = data
+        with tf.GradientTape() as tape:
+            pred, mu, log_var = self(x, training=True)
+
+            kl_loss = tf.reduce_mean(0.5*(-log_var + tf.exp(log_var) + tf.pow(mu, 2)-1), 1)
+            ce_loss = self.loss(x, pred)
+            loss = ce_loss + kl_loss
+            loss = tf.reduce_mean(loss)
+
+        grads = tape.gradient(loss, self.trainable_weights)
+        self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
+        
+        return {'loss': loss}
+    
+    def build_encoder(self):
+        hidden = 600
+        inputs = Input(shape = (self.num_items, ))
+        h = inputs
+        h = Dropout(0.5)(h)
+        
+        h1 = Dense(self.hidden_layers[0], activation='relu')(h)
+        h1 = tf.keras.layers.LayerNormalization()(h1)
+
+        h2 = Dense(hidden)(h1) + h1
+        h2 = Activation('relu')(h2)
+        h2 = tf.keras.layers.LayerNormalization()(h2)
+        
+        h3 = Dense(hidden)(h2) + h1 +  h2
+        h3 = Activation('relu')(h3)
+        h3 = tf.keras.layers.LayerNormalization()(h3)
+
+        mu = Dense(self.emb_dim)(h3)
+        log_var = Dense(self.emb_dim)(h3)
+        
+        return Model(inputs, [mu, log_var])
+    
+    def build_decoder(self):
+        inputs = Input(shape = (self.emb_dim, ))
+        h = inputs
+        
+        h0 = Dense(600, activation='relu')(h)
+        h0 = tf.keras.layers.LayerNormalization()(h0)
+        
+        h1 = Dense(600)(h0)+h0
+        h1 = Activation('relu')(h1)
+        h1 = tf.keras.layers.LayerNormalization()(h1)
+        
+        decoder_r = Dense(self.num_items, activation='sigmoid')(h1)
+        decoder_l = Dense(self.num_items, activation='sigmoid')(h)
+        
+        outputs = decoder_r * decoder_l # deep & wide
+        
+        return Model(inputs, outputs)
+
 class RecVAE(BaseVAE):
     ## need to be fixed => seperate all models in seperate file
     def __init__(self, num_items, emb_dim, hidden_layers, activation=None, gamma=1., alternate=True):

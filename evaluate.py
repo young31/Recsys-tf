@@ -5,9 +5,10 @@ import heapq
 def evaluate_model(model, testRatings, testNegatives, history=None, K=10, is_ae=False, is_ease=False):
     hits, ndcgs = [],[]
     for idx in range(len(testRatings)):
-        user = testRatings[idx][0] if isinstance(model, CDAE) else None
+        user = testRatings[idx][0]
         gtItem = testRatings[idx][1]
         if is_ae:
+            user = testRatings[idx][0] if isinstance(model, CDAE) else None
             (hr,ndcg) = eval_one_rating_ae(model, gtItem, testNegatives[idx], history[idx:idx+1], user=user, K=K)
         elif is_ease:
             (hr,ndcg) = eval_one_rating_ease(model, gtItem, testNegatives[idx], user=user, K=K)
@@ -63,7 +64,6 @@ def eval_one_rating_ease(model, gtItem, negatives, user, K=10):
     # Get prediction scores
     map_item_score = {}
     predictions = model.predict_one_user(user, items)
-    print(predictions)
 
     for i in range(len(items)):
         item = items[i]
