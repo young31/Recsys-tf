@@ -1,4 +1,6 @@
-# SESSION-BASED RECOMMENDATIONS WITH RECURRENT NEURAL NETWORKS(2016) - GRU4Rec
+# Session based
+
+## SESSION-BASED RECOMMENDATIONS WITH RECURRENT NEURAL NETWORKS(2016) - GRU4Rec
 
 - GRU4Rec
 - input 으로 ohe
@@ -8,7 +10,7 @@
 - 모델이 구조적으로 이상해보이는 부분이 많음
   - sequence 모델 발전 전이라 그런듯
 
-# Personalized Top-N Sequential Recommendation via Convolutional Sequence Embedding(2018) - Caser
+## Personalized Top-N Sequential Recommendation via Convolutional Sequence Embedding(2018) - Caser
 
 - sequence item을 임베딩 => cnn으로 압축 => fcn => pred
   - horizontal / vertical conv (전에 시퀀스 데이터 다룰 때 쓰면 시도해봐야지 했던 구조!)
@@ -18,7 +20,7 @@
 - svae 방식을 적용하여 뒷부분 바꿔보는 것도 의미가 있을 듯
   - 또는 transformer 방식을 적용
 
-# **Sequential Variational Auto-encoder(2018) - SAVE**
+## **Sequential Variational Auto-encoder(2018) - SAVE**
 
 - sequence + vae
   - 최근 vae 기반의 모델이 좋은 성능을 보여주고 있는 것을 고려하면 나쁘지 않은 선택일 수도
@@ -27,7 +29,7 @@
   - latent 과정에서 rnn이 들어갈 줄 알았는데 임베딩 과정에만 들어감(encoder 진입 전)
 - 그래도 성능이 잘 나온다는 것을 보면 이런 구조를 기반으로 발전시키는 것도 도움이 될 지도
 
-# Self-Attentive Sequential Recommendation(2018) - SASRec
+## Self-Attentive Sequential Recommendation(2018) - SASRec
 
 - RNN 기반의 방식은 제대로 dynamics를 반영하지 못하므로 attention 기반의 방식을 활용
 - 입력은 유저 히스토리, 출력은 입력에서 1 step 후의 히스토리
@@ -40,7 +42,7 @@
 - (사견) 전반적으로 깔끔한 구조인듯
   - conv로 훑는게 독특 => 실효성에 대해서는 dense로 연결한 것과 실험이 없어서 확인해보면 좋을듯
 
-# BERT4Rec: Sequential Recommendation with Bidirectional Encoder Representations from Transformer(2019)
+## BERT4Rec: Sequential Recommendation with Bidirectional Encoder Representations from Transformer(2019)
 
 - Attention 만 활용하여 예측 모델 만듬
   - transformer encoder
@@ -53,12 +55,31 @@
   - 예측할 때는 마지막만 사용하면 됨
     - multi period 는 언급이 없음 => 필요하다면 학습할 때 부터 처리해야 할 듯
 
-# PEN4Rec: Preference Evolution Networks for Session-based Recommendation(2021)
+## PEN4Rec: Preference Evolution Networks for Session-based Recommendation(2021)
 
 - 유저의 히스토리를 그래프로 표현
+  - 순차적 방향 그래프
   - GNN 기반으로 stage 1 작업
   - multi-hop 에 대한 transition 도 캐치하겠다
 - 유저의 선호도가 변화한다(evolving)고 보고 이것을 모델링하는 것이 중요
 - attention 매커니즘을 활용
 - 설명만 봐서는 네트워크 구조를 어떻게 구현한지 이해가 안되는 부분이 많다
   - 코드가 공개되면 다시 한 번 볼 필요가 있을 듯
+
+# Others
+
+## Recommending What Video to Watch Next: A Multitask Ranking System(2019)
+
+- mmoe + bias reduction
+  - bias 줄 수 있는 부분을 학습때는 함께 사용하여 학습 => serving시에는 고정
+    - regularizer 로 처리할수도 있으나 부적합하다고 판단
+    - shallow tower 로 wide component역할
+- 다양한 방식들이 있지만 실제로 serving 하기 위한 모델로는 부적합하기 때문에 위와 같은 구조를 선택
+  - mha, cnn ...
+
+- 후기
+  - 처음으로 practical use 관점에서 모델 개발에 대한 시각을 접함
+  - 실제 서비스하면서 최근 데이터로 계속 학습한다고 하는데 어떤 방식으로 처리하는지 궁금하다
+    - 임베딩이 들어가면 매 번 다시짜는 것인가..
+    - 그런데 임베딩 행렬의 크기가 그러면 끝도 없이 늘어나게 되는데..
+
